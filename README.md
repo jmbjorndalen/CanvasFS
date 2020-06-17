@@ -15,6 +15,10 @@ make it easier to focus on improvements the students have made.
 
 Currently, it only focuses on assignments. 
 
+Some of the code here might be merged with the
+[https://github.com/edvardpedersen/canvashelper](https://github.com/edvardpedersen/canvashelper)
+project.
+
 
 Reguirements
 ------------
