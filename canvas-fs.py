@@ -36,9 +36,8 @@ def filter_dict(d, remove_keys):
 
 
 class Entry:
-    def __init__(self, pathname, is_dir, cont, is_meta=False, time_entry=None):
+    def __init__(self, pathname, cont, time_entry=None):
         self.pathname = pathname
-        self.is_dir = is_dir
         self.cont = cont
         p = Path(pathname)
         self.dirname = str(p.parent)
@@ -47,15 +46,7 @@ class Entry:
         if (dts := cont.get(time_entry, None)) is not None:
             dt = datetime.datetime.strptime(dts, '%Y-%m-%dT%H:%M:%SZ')
             self.time = dt.timestamp()
-
-        self.is_meta = is_meta
-        if self.is_meta:
-            # Provide a more human readable version of the metadata
-            self.meta_str = (json.dumps(cont, sort_keys=True, indent=4) + "\n").encode('utf-8')
-            self.date = time()
-            self.size = len(self.meta_str)
-        else:
-            self.size = self.cont.get('size', 0)
+        self.size = self.cont.get('size', 0)
 
     def get_offline_file(self, fid, url):
         """Reads and returns a cached file, or downloads it and returns it if it isn't in the cache already"""
@@ -73,16 +64,47 @@ class Entry:
 
     def read(self, size, offset):
         """Reads a chunk from a file (potentially downloading and cacheing the file if necessary)."""
-        # logging.log(logging.DEBUG, self.meta_str)
-        # logging.log(logging.DEBUG, f"size={size}, offset={offset}")
         start = offset
         end  = offset + size
-        if self.is_meta:
-            return self.meta_str[start:end]
         fid = self.cont['id']
         url = self.cont['url']
         data = self.get_offline_file(fid, url)
         return data[start:end]
+
+    def getattr(self):
+        return dict(st_mode=(S_IFREG | 0o444),
+                    st_size=self.size,
+                    st_ctime=self.time,
+                    st_mtime=self.time,
+                    st_atime=self.time)
+
+
+class DirEntry(Entry):
+    def __init__(self, pathname, cont, time_entry=None):
+        super().__init__(pathname, cont, time_entry=time_entry)
+
+    def getattr(self):
+        return dict(st_mode=(S_IFDIR | 0o555),
+                    st_nlink=2,
+                    st_ctime=self.time,
+                    st_mtime=self.time,
+                    st_atime=self.time)
+
+
+class MetaEntry(Entry):
+    """Provide a human readable version of the metadata with prettified .json files added as .meta files in directories."""
+    def __init__(self, pathname, cont, time_entry=None, filter_entries=None):
+        d = cont if filter_entries is None else filter_dict(cont, filter_entries)
+        super().__init__(pathname + "/.meta", d, time_entry=time_entry)
+        self.meta_str = (json.dumps(cont, sort_keys=True, indent=4) + "\n").encode('utf-8')
+        self.time = time()
+        self.size = len(self.meta_str)
+
+    def read(self, size, offset):
+        """Reads a chunk from a file (potentially downloading and cacheing the file if necessary)."""
+        start = offset
+        end  = offset + size
+        return self.meta_str[start:end]
 
 
 def add_entry(entry):
@@ -96,38 +118,30 @@ class Context(LoggingMixIn, Operations):
     'Example filesystem to demonstrate fuse_get_context()'
 
     def getattr(self, path, fh=None):
-        uid, gid, pid = fuse_get_context()
-        ftime = 0
-        entry = files.get(path, None)
-        if entry:
-            ftime = entry.time
-        if path in dirs:
-            st = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
-            if path == "/":
-                ftime = time()
-        elif path in files:
-            if entry.is_dir:
-                st = dict(st_mode=(S_IFDIR | 0o555), st_nlink=2)
-            else:
-                size = entry.size
-                st = dict(st_mode=(S_IFREG | 0o444), st_size=size)
-        else:
-            raise FuseOSError(ENOENT)
-        st['st_ctime'] = st['st_mtime'] = st['st_atime'] = ftime  # time()
-        return st
+        # uid, gid, pid = fuse_get_context()
+        if (entry := files.get(path, None)):
+            return entry.getattr()
+
+        if path == "/":
+            # TODO: should consider making a "fake" root entry to avoid this type of code.
+            dtime = time()
+            return dict(st_mode=(S_IFDIR | 0o555),
+                        st_nlink=2,
+                        st_ctime=dtime,
+                        st_mtime=dtime,
+                        st_atime=dtime)
+
+        raise FuseOSError(ENOENT)
 
     def read(self, path, size, offset, fh):
-        # uid, gid, pid = fuse_get_context()
-        # def encoded(x):
-        #     return ('%s\n' % x).encode('utf-8')
-        logging.log(logging.DEBUG, f"**read**({path}, {size}, {offset}, {fh})")
+        # logging.log(logging.DEBUG, f"**read**({path}, {size}, {offset}, {fh})")
         if path in files:
             e = files[path]
             return e.read(size, offset)
-
         raise RuntimeError('unexpected path: %r' % path)
 
     def readdir(self, path, fh):
+        # logging.log(logging.DEBUG, f"readdir: {path} {[d.fname for d in dirs.get(path, [])]}")
         return [d.fname for d in dirs.get(path, [])]
 
     # Disable unused operations:
@@ -162,25 +176,26 @@ if __name__ == '__main__':
         # Top level directory for each assignment.
         subs = a['f_submissions']
         a_path = '/' + a['name']
-        add_entry(Entry(a_path, True, a, time_entry='created_at'))
-        add_entry(Entry(a_path + "/.meta", False, filter_dict(a, ['f_studs', 'f_submissions']), is_meta=True, time_entry='updated_at'))
+        add_entry(DirEntry(a_path, a, time_entry='created_at'))
+        add_entry(MetaEntry(a_path, a, time_entry='updated_at', filter_entries=['f_studs', 'f_submissions']))
+        # logging.log(logging.DEBUG, f"{dirs}")
         for sub in a['f_submissions']:
             # Each submission is in a subdirectory with the name of the student.
             sub_path = f"{a_path}/{sub['student_name']}"
             # Students that haven't submitted still show up, but submitted_at is non-existing. This gives us a 0 epoch time.
-            add_entry(Entry(sub_path, True, sub, time_entry='submitted_at'))
-            add_entry(Entry(sub_path + "/.meta", False, filter_dict(sub, ['submission_history']), is_meta=True, time_entry='submitted_at'))
+            add_entry(DirEntry(sub_path, sub, time_entry='submitted_at'))
+            add_entry(MetaEntry(sub_path, sub, time_entry='submitted_at', filter_entries=['submission_history']))
             for s in sub['submission_history']:
                 # Each version of the submission is listed in a separate subdirectory
                 if s['attempt'] is None:
                     # Student hasn't submitted anything.
                     continue
                 attempt_path = f"{sub_path}/{s['attempt']}"
-                add_entry(Entry(attempt_path, True, s, time_entry='submitted_at'))
-                add_entry(Entry(attempt_path + "/.meta", False, s, is_meta=True, time_entry='submitted_at'))
+                add_entry(DirEntry(attempt_path, s, time_entry='submitted_at'))
+                add_entry(MetaEntry(attempt_path, s, time_entry='submitted_at'))
                 for att in s.get('attachments', []):
                     # Each file in the submission
-                    add_entry(Entry(f"{attempt_path}/{att['filename']}", False, att, time_entry='modified_at'))
+                    add_entry(Entry(f"{attempt_path}/{att['filename']}", att, time_entry='modified_at'))
 
     fuse = FUSE(
         Context(), args.mount, foreground=True, ro=True, allow_other=True)
