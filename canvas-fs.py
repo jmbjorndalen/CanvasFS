@@ -6,11 +6,23 @@ Metadata for a given level in a hierarchy is included as .meta files (json forma
 
 Files are downloaded from Canvas when opened in the filesystem. Cached files are stored in .cache.
 
-TODO:
-- downloaded zips can be "unpacked". Files and directories inside can be added dynamically.
-  One risk with this is if a "find" or similar programs end up triggering downloads of every
-  zip file handed in when trying to enter the "unpacked" directories.
+Zip files
+------
+ZipFiles will be automatically mounted as '<pathname>.unp' once they are cached locally. This means that
+once you try to read a zip file, it will be available as an unpacked directory locally.
+
+The reason for not providing any 'unzip' directory before downloading the file is that this could cause
+accidental download of all zip files if a 'find' or another tool tried to traverse the unzip directories.
+
+
+TODO
+----
+- clean up class hierarchy a bit to make the zip files less kludgy.
+- safer handling of file types for detecting zip files.
+- possibility of using 'touch' or some other method for downloading an assignment without reading the files?
 - configurable cache directory.
+- rm on a file: remove from cache.
+  We may not need to remove zip files that are already mounted from memory even if we remove the file from the cache directory.
 """
 
 import logging
@@ -24,7 +36,7 @@ import os
 import json
 import urllib.request
 from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn, fuse_get_context
-
+import zipfile
 
 # Make sure the cache directory exists
 os.makedirs(".cache", exist_ok=True)
@@ -48,10 +60,16 @@ class Entry:
             self.time = dt.timestamp()
         self.size = self.cont.get('size', 0)
 
+    def _cache_path(self, fid):
+        return f".cache/{fid}"
+
+    def _is_cached(self, cpath):
+        return os.path.exists(cpath)
+
     def get_offline_file(self, fid, url):
         """Reads and returns a cached file, or downloads it and returns it if it isn't in the cache already"""
-        cpath = f".cache/{fid}"
-        if os.path.exists(cpath):
+        cpath = self._cache_path(fid)
+        if self._is_cached(cpath):
             return open(cpath, 'rb').read()
         r = urllib.request.urlopen(url)
         if r.status == 200:
@@ -107,10 +125,94 @@ class MetaEntry(Entry):
         return self.meta_str[start:end]
 
 
+# ###### Zip Files ######################
+
+# TODO: kludgy, but let's figure out how to do this before cleaning it up.
+
+class ZipEntry(Entry):
+    def __init__(self, pathname, cont, time_entry=None):
+        super().__init__(pathname, cont, time_entry=time_entry)
+        self.is_unpacked = False
+        self._data = None
+        self.check_unpack()
+
+    def check_unpack(self):
+        if self.is_unpacked:
+            return
+        fid = self.cont['id']
+        url = self.cont['url']
+        cpath = self._cache_path(fid)
+        if self._is_cached(cpath):
+            if self._data is None:
+                # It's already cached, so just read it.
+                self._data = self.get_offline_file(fid, url)
+
+            with zipfile.ZipFile(open(cpath, 'rb')) as zf:
+                dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
+                # add the root/mount point
+                add_entry(ZipDirEntry(dir_prefix, None, self.time))
+                for info in zf.infolist():
+                    path = f"{dir_prefix}/{info.filename}"
+                    if info.is_dir():
+                        add_entry(ZipDirEntry(path, info))
+                    else:
+                        add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
+             
+            # b) scan entries and add file and
+            # TODO: need a separate directory and file entry type for this as we need to read from the zip file
+            # instead of the cache.
+            pass
+
+    def read(self, size, offset):
+        if self._data is None:
+            fid = self.cont['id']
+            url = self.cont['url']
+            self._data = self.get_offline_file(fid, url)
+            self.check_unpack()
+        ret = self._data[offset:offset + size]
+        return ret
+
+
+class ZipDirEntry(DirEntry):
+    def __init__(self, path, info, dtime=None):
+        # A little bit of band-aid. Should modify the hierarchy further up.
+        if dtime is None:
+            # Need to pick from info object
+            dt = datetime.datetime(*info.date_time)
+        else:
+            dt = datetime.datetime.fromtimestamp(dtime)
+        d = dict(time=dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
+        if path.endswith("/"):
+            # Remove trailing slash
+            path = path[:-1]
+        super().__init__(path, d, time_entry='time')
+        logging.log(logging.DEBUG, f"ZipDirEntry {path}")
+
+
+class ZipFileEntry(Entry):
+    def __init__(self, path, info, data):
+        # A little bit of band-aid. Should modify the hierarchy further up.
+        # Need to pick from info object
+        dt = datetime.datetime(*info.date_time)
+        d = dict(time=dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
+        super().__init__(path, d, time_entry='time')
+        self._data = data
+        self.size = len(data)
+
+    def read(self, size, offset):
+        return self._data[offset:offset + size]
+
+
+
+
+######################################
+
 def add_entry(entry):
     """Add entry to file/pathnames and directories"""
     files[entry.pathname] = entry
     dirs[entry.dirname].append(entry)
+    if isinstance(entry, (ZipDirEntry, ZipFileEntry)):
+        logging.log(logging.DEBUG, f"add_entry zip file/dir entry for path {entry.pathname} in dir {entry.dirname}")
 
 
 # This is based on the Context example from the fusepy distribution.
@@ -195,7 +297,11 @@ if __name__ == '__main__':
                 add_entry(MetaEntry(attempt_path, s, time_entry='submitted_at'))
                 for att in s.get('attachments', []):
                     # Each file in the submission
-                    add_entry(Entry(f"{attempt_path}/{att['filename']}", att, time_entry='modified_at'))
+                    fpath = f"{attempt_path}/{att['filename']}"
+                    if fpath.lower().endswith('.zip'):
+                        add_entry(ZipEntry(fpath, att, time_entry='modified_at'))
+                    else:
+                        add_entry(Entry(fpath, att, time_entry='modified_at'))
 
     fuse = FUSE(
         Context(), args.mount, foreground=True, ro=True, allow_other=True)
