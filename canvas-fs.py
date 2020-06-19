@@ -1,10 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 Fuse filesystem for exploring assignments and handins.
 
 Metadata for a given level in a hierarchy is included as .meta files (json format).
 
-Files are downloaded from Canvas when opened in the filesystem. Cached files are stored in .cache.
+Files are downloaded from Canvas when opened in the filesystem. Cached files are stored in CACHE_DIR (default .cache).
 
 Zip files
 ------
@@ -38,8 +38,8 @@ import urllib.request
 from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn, fuse_get_context
 import zipfile
 
-# Make sure the cache directory exists
-os.makedirs(".cache", exist_ok=True)
+CACHE_DIR = ".cache"
+
 
 
 def filter_dict(d, remove_keys):
@@ -61,7 +61,7 @@ class Entry:
         self.size = self.cont.get('size', 0)
 
     def _cache_path(self, fid):
-        return f".cache/{fid}"
+        return f"{CACHE_DIR}/{fid}"
 
     def _is_cached(self, cpath):
         return os.path.exists(cpath)
@@ -261,12 +261,19 @@ class Context(LoggingMixIn, Operations):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument('-c', '--cache')  # cache directory
     parser.add_argument('mount')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG)
 
-    assignments = json.loads(open(".cache/assignments.json").read())
+    if args.cache:
+        CACHE_DIR = args.cache
+
+    # Make sure the cache directory exists
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+    assignments = json.loads(open(f"{CACHE_DIR}/assignments.json").read())
     # dirs is used to keep track of files and subdirectories in each directory.
     # files are each file/directory in the filesystem with an Entry object for each file.
     dirs = defaultdict(list)
