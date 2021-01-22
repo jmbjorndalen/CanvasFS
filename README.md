@@ -7,7 +7,7 @@ lets files students hand in and the state of the assignments without
 having to download them with a browser. 
 
 To get an idea why: the students in the current course I'm teaching
-have handed in 994 files so far. About half of the zip files with
+have handed in 994 files so far. About half of them zip files with
 source code.
 
 The file system exposes the revision history for handed in assignments to
@@ -20,7 +20,7 @@ Some of the code here might be merged with the
 project.
 
 
-Reguirements
+Requirements
 ------------
 
 It has only been tested with Linux, but fusepy should work with Mac as

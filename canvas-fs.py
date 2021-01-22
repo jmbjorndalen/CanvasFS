@@ -208,9 +208,7 @@ class ZipFileEntry(Entry):
         return self._data[offset:offset + size]
 
 
-
-
-######################################
+# #####################################
 
 def add_entry(entry):
     """Add entry to file/pathnames and directories"""
@@ -278,7 +276,7 @@ if __name__ == '__main__':
     # Make sure the cache directory exists
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-    # the json file contains a list of assignments. 
+    # The json file contains a list of assignments.
     assignments = json.loads(open(f"{CACHE_DIR}/assignments.json").read())
     # dirs is used to keep track of files and subdirectories in each directory.
     # files are each file/directory in the filesystem with an Entry object for each file.
@@ -312,6 +310,8 @@ if __name__ == '__main__':
                     # Each file in the submission
                     fpath = f"{attempt_path}/{att['filename']}"
                     if fpath.lower().endswith('.zip'):
+                        # Note: the 'unp' directory is not added until the zip file is downloaded (by reading it)
+                        # The reason for this is to avoid triggering downloads of all zip files using "find", file managers etc.
                         add_entry(ZipEntry(fpath, att, time_entry='modified_at'))
                     else:
                         add_entry(Entry(fpath, att, time_entry='modified_at'))
