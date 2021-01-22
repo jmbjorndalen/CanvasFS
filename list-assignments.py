@@ -28,6 +28,7 @@ for a in assignments:
         # 'workflow_state']
         # also: added student_name in the get-submission-info file
         print(sub['student_name'], sub['excused'], sub['attempt'], sub['workflow_state'], sub['grade'], sub['entered_grade'])
+        # print(sub['student_name'])# , sub['excused'], sub['attempt'], sub['workflow_state'], sub['grade'], sub['entered_grade'])
         for s in sub['submission_history']:
             print("      ", s['attempt'], s["submitted_at"], s['cached_due_date'])
             for att in s.get('attachments', []):

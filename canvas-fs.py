@@ -41,13 +41,18 @@ import zipfile
 CACHE_DIR = ".cache"
 
 
-
 def filter_dict(d, remove_keys):
     """Returns a new dict with all key:values except the ones in remove_keys"""
     return {k : v for k, v in d.items() if k not in remove_keys}
 
 
 class Entry:
+    """Uses the following attributes from cont:
+    - 'time_entry'
+    - id
+    - url
+    - size
+    """
     def __init__(self, pathname, cont, time_entry=None):
         self.pathname = pathname
         self.cont = cont
@@ -157,7 +162,7 @@ class ZipEntry(Entry):
                         add_entry(ZipDirEntry(path, info))
                     else:
                         add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
-             
+
             # b) scan entries and add file and
             # TODO: need a separate directory and file entry type for this as we need to read from the zip file
             # instead of the cache.
@@ -265,7 +270,7 @@ if __name__ == '__main__':
     parser.add_argument('mount')
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.ERROR)
 
     if args.cache:
         CACHE_DIR = args.cache
@@ -273,6 +278,7 @@ if __name__ == '__main__':
     # Make sure the cache directory exists
     os.makedirs(CACHE_DIR, exist_ok=True)
 
+    # the json file contains a list of assignments. 
     assignments = json.loads(open(f"{CACHE_DIR}/assignments.json").read())
     # dirs is used to keep track of files and subdirectories in each directory.
     # files are each file/directory in the filesystem with an Entry object for each file.
