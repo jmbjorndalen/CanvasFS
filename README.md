@@ -61,7 +61,7 @@ The data is stored in the `.cache` subdirectory.
 Mounting the filesystem is as simple as: 
 
 ```
-python3 canvas-fs.py tmp
+python3 canvasfs.py tmp
 ```
 
 Where `tmp` is the directory where you want to mount the assignments. 
