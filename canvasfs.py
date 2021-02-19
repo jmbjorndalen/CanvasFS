@@ -40,6 +40,8 @@ import zipfile
 
 CACHE_DIR = ".cache"
 
+DEBUG=False
+DEBUG_FILE = "/tmp/canvasfs-dump.json"
 
 def filter_dict(d, remove_keys):
     """Returns a new dict with all key:values except the ones in remove_keys"""
@@ -47,15 +49,17 @@ def filter_dict(d, remove_keys):
 
 
 class Entry:
-    """Uses the following attributes from cont:
-    - 'time_entry'
-    - id
-    - url
-    - size
-    """
     def __init__(self, pathname, cont, time_entry=None):
-        self.pathname = pathname
+        """cont : dict with
+        - timestamp in cont[time_entry],
+        - necessary for files: 
+          - id,
+          - url
+          - size. 
+        time_entry = entry name in cont for picking up the entry timestamp
+        """
         self.cont = cont
+        self.pathname = pathname
         p = Path(pathname)
         self.dirname = str(p.parent)
         self.fname = str(p.name)
@@ -134,48 +138,18 @@ class MetaEntry(Entry):
 
 # TODO: kludgy, but let's figure out how to do this before cleaning it up.
 
-class ZipEntry(Entry):
-    def __init__(self, pathname, cont, time_entry=None):
-        super().__init__(pathname, cont, time_entry=time_entry)
-        self.is_unpacked = False
-        self._data = None
-        self.check_unpack()
-
-    def check_unpack(self):
-        if self.is_unpacked:
-            return
-        fid = self.cont['id']
-        url = self.cont['url']
-        cpath = self._cache_path(fid)
-        if self._is_cached(cpath):
-            if self._data is None:
-                # It's already cached, so just read it.
-                self._data = self.get_offline_file(fid, url)
-
-            with zipfile.ZipFile(open(cpath, 'rb')) as zf:
-                dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
-                # add the root/mount point
-                add_entry(ZipDirEntry(dir_prefix, None, self.time))
-                for info in zf.infolist():
-                    path = f"{dir_prefix}/{info.filename}"
-                    if info.is_dir():
-                        add_entry(ZipDirEntry(path, info))
-                    else:
-                        add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
-
-            # b) scan entries and add file and
-            # TODO: need a separate directory and file entry type for this as we need to read from the zip file
-            # instead of the cache.
-            pass
+class ZipFileEntry(Entry):
+    def __init__(self, path, info, data):
+        # A little bit of band-aid. Should modify the hierarchy further up.
+        # Need to pick from info object
+        dt = datetime.datetime(*info.date_time)
+        d = dict(time=dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
+        super().__init__(path, d, time_entry='time')
+        self._data = data
+        self.size = len(data)
 
     def read(self, size, offset):
-        if self._data is None:
-            fid = self.cont['id']
-            url = self.cont['url']
-            self._data = self.get_offline_file(fid, url)
-            self.check_unpack()
-        ret = self._data[offset:offset + size]
-        return ret
+        return self._data[offset:offset + size]
 
 
 class ZipDirEntry(DirEntry):
@@ -194,26 +168,98 @@ class ZipDirEntry(DirEntry):
         logging.log(logging.DEBUG, f"ZipDirEntry {path}")
 
 
-class ZipFileEntry(Entry):
-    def __init__(self, path, info, data):
-        # A little bit of band-aid. Should modify the hierarchy further up.
-        # Need to pick from info object
-        dt = datetime.datetime(*info.date_time)
-        d = dict(time=dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
-        super().__init__(path, d, time_entry='time')
-        self._data = data
-        self.size = len(data)
+class ZipEntry(Entry):
+    if DEBUG:
+        debuglst = []
+    def __init__(self, pathname, cont, time_entry=None):
+        super().__init__(pathname, cont, time_entry=time_entry)
+        self.is_unpacked = False
+        self._data = None
+        self.check_unpack()
+
+    def check_unpack(self):
+        if self.is_unpacked:
+            return
+        fid = self.cont['id']
+        url = self.cont['url']
+        cpath = self._cache_path(fid)
+        if self._is_cached(cpath):
+            if self._data is None:
+                # It's already cached, so just read it.
+                self._data = self.get_offline_file(fid, url)
+
+            try:
+                with zipfile.ZipFile(open(cpath, 'rb')) as zf:
+                    # Some zipfiles don't include subdirectory entries (only direct paths to files).
+                    # This will be handled in add_entry. 
+                    dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
+                    # add the root/mount point
+                    add_entry(ZipDirEntry(dir_prefix, None, self.time))
+                    # add each of the directories and files listed in the zip file. 
+                    for info in zf.infolist():
+                        path = f"{dir_prefix}/{info.filename}"
+                        if info.is_dir():
+                            add_entry(ZipDirEntry(path, info))
+                        else:
+                            if DEBUG:
+                                self.debuglst.append(path)
+                            add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
+            except zipfile.BadZipFile as e:
+                print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
+
+            # b) scan entries and add file and
+            # TODO: need a separate directory and file entry type for this as we need to read from the zip file
+            # instead of the cache.
+            pass
 
     def read(self, size, offset):
-        return self._data[offset:offset + size]
+        if self._data is None:
+            fid = self.cont['id']
+            url = self.cont['url']
+            self._data = self.get_offline_file(fid, url)
+            self.check_unpack()
+        ret = self._data[offset:offset + size]
+        return ret
+
 
 
 # #####################################
 
 def add_entry(entry):
-    """Add entry to file/pathnames and directories"""
+    """Add entry to file/pathnames and directories.
+    Will add necessary entries for files/directories that lead up to this file if
+    they are missing.
+    """
+    if entry.pathname in files:
+        # TODO: check if file entry exists already (both for file entry and before appending to dirs)
+        print(f"WARNING: {entry.pathname} already exists in the file list")
+        return
     files[entry.pathname] = entry
     dirs[entry.dirname].append(entry)
+
+    # Need to ensure that the entire path from root to this entry is present in dirs (and that subdirs leading to this entry are present)
+    # At this point:
+    # - entry.pathname is present in files
+    # - entry.dirname is present in dirs
+    # - entry.dirname may not be present in files
+    # - paths leading up to this path may not be present in either files or dirs
+    cont = {'time': entry.time}
+    for parent in Path(entry.pathname).parents:
+        # Check that each of the parents have a parent pointing to them.
+        # Need entries in both 'files' and 'dirs' to avoid failed lookups
+        path = str(parent)
+        ppath = str(parent.parent)
+        dadd = ppath not in dirs
+        padd = path not in files
+        if dadd or padd:
+            # print(f"DEBUG, missing entry: {dadd:2} {padd:2} {path}")
+            ne = DirEntry(path, cont)
+            if dadd:
+                dirs[ppath].append(ne)
+            if padd:
+                files[path] = ne
+            
+            
     if isinstance(entry, (ZipDirEntry, ZipFileEntry)):
         logging.log(logging.DEBUG, f"add_entry zip file/dir entry for path {entry.pathname} in dir {entry.dirname}")
 
@@ -290,14 +336,14 @@ if __name__ == '__main__':
         subs = a['f_submissions']
         a_path = '/' + a['name']
         add_entry(DirEntry(a_path, a, time_entry='created_at'))
-        add_entry(MetaEntry(a_path, a, time_entry='updated_at', filter_entries=['f_studs', 'f_submissions']))
+        add_entry(MetaEntry(a_path, a, time_entry='updated_at', filter_entries={'f_studs', 'f_submissions'}))
         # logging.log(logging.DEBUG, f"{dirs}")
         for sub in a['f_submissions']:
             # Each submission is in a subdirectory with the name of the student.
             sub_path = f"{a_path}/{sub['student_name']}"
             # Students that haven't submitted still show up, but submitted_at is non-existing. This gives us a 0 epoch time.
             add_entry(DirEntry(sub_path, sub, time_entry='submitted_at'))
-            add_entry(MetaEntry(sub_path, sub, time_entry='submitted_at', filter_entries=['submission_history']))
+            add_entry(MetaEntry(sub_path, sub, time_entry='submitted_at', filter_entries={'submission_history'}))
             for s in sub['submission_history']:
                 # Each version of the submission is listed in a separate subdirectory
                 if s['attempt'] is None:
@@ -315,6 +361,11 @@ if __name__ == '__main__':
                         add_entry(ZipEntry(fpath, att, time_entry='modified_at'))
                     else:
                         add_entry(Entry(fpath, att, time_entry='modified_at'))
+    print("Ready")
+    if DEBUG:
+        print("Debug dump to ", DEBUG_FILE)
+        with open(DEBUG_FILE, 'w') as f:
+            json.dump(ZipEntry.debuglst, f)
 
     fuse = FUSE(
         Context(), args.mount, foreground=True, ro=True, allow_other=True)
