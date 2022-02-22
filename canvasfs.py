@@ -41,8 +41,8 @@ import zipfile
 CACHE_DIR = ".cache"
 
 DEBUG = False
-DEBUG_FILE = "/tmp/canvasfs-dump.json"
-LOG_LEVEL = logging.DEBUG if DEBUG else logging.ERROR
+# LOG_LEVEL = logging.DEBUG
+LOG_LEVEL = logging.ERROR
 
 
 def filter_dict(d, remove_keys):
@@ -107,6 +107,9 @@ class Entry:
                     st_mtime=self.time,
                     st_atime=self.time)
 
+    def __repr__(self):
+        return f'<{self.__class__.__name__}: {self.pathname}>'
+
 
 class DirEntry(Entry):
     def __init__(self, pathname, cont, time_entry=None):
@@ -128,6 +131,26 @@ class MetaEntry(Entry):
         self.meta_str = (json.dumps(cont, sort_keys=True, indent=4) + "\n").encode('utf-8')
         self.time = time()
         self.size = len(self.meta_str)
+
+    def read(self, size, offset):
+        """Reads a chunk from a file (potentially downloading and cacheing the file if necessary)."""
+        start = offset
+        end  = offset + size
+        return self.meta_str[start:end]
+
+
+class DebugEntry(Entry):
+    DEBUG_FILE = "/.debuginfo.json"
+    """A debug file that provides json data about the current mounted filesystem"""
+    def __init__(self, pathname=None, cont=None, time_entry=None, filter_entries=None):
+        d = {}
+        super().__init__(self.DEBUG_FILE, d, time_entry=time_entry)
+        self._update_str()
+        self.time = time()
+        self.size = len(self.meta_str)
+
+    def _update_str(self):
+        self.meta_str = (json.dumps({'unzipped_files' : ZipEntry.debuglst}, sort_keys=True, indent=4) + "\n").encode('utf-8')
 
     def read(self, size, offset):
         """Reads a chunk from a file (potentially downloading and cacheing the file if necessary)."""
@@ -171,8 +194,7 @@ class ZipDirEntry(DirEntry):
 
 
 class ZipEntry(Entry):
-    if DEBUG:
-        debuglst = []
+    debuglst = []
 
     def __init__(self, pathname, cont, time_entry=None):
         super().__init__(pathname, cont, time_entry=time_entry)
@@ -204,8 +226,7 @@ class ZipEntry(Entry):
                         if info.is_dir():
                             add_entry(ZipDirEntry(path, info))
                         else:
-                            if DEBUG:
-                                self.debuglst.append(path)
+                            self.debuglst.append(path)
                             add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
             except zipfile.BadZipFile:
                 print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
@@ -263,7 +284,8 @@ def add_entry(entry):
             if padd:
                 # if unknown path, it needs to be added both the the files entry and the parent directory
                 files[path] = ne
-                dirs[ppath].append(ne)
+                if path != ppath:   # avoids adding a directory entry to its own directory, which would be an error (typically for root entries)
+                    dirs[ppath].append(ne)
             elif dadd:
                 print(f"DEBUG/TODO: Will this happen? {dadd:2} {padd:2} {path}")
                 dirs[ppath].append(ne)
@@ -369,11 +391,8 @@ if __name__ == '__main__':
                         add_entry(ZipEntry(fpath, att, time_entry='modified_at'))
                     else:
                         add_entry(Entry(fpath, att, time_entry='modified_at'))
-    print("Ready")
-    if DEBUG:
-        print("Debug dump to ", DEBUG_FILE)
-        with open(DEBUG_FILE, 'w') as f:
-            json.dump(ZipEntry.debuglst, f)
 
-    fuse = FUSE(
-        Context(), args.mount, foreground=True, ro=True, allow_other=True)
+    add_entry(DebugEntry())
+    print("Ready")
+
+    fuse = FUSE(Context(), args.mount, foreground=True, ro=True, allow_other=True)
