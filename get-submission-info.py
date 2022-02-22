@@ -11,6 +11,7 @@ import os
 BASE_URL  = "https://uit.instructure.com/"   # Canvas for uit.no
 COURSE_ID = 16497                            # inf-1400 2020
 COURSE_ID = 21176                            # inf-1400 2021
+COURSE_ID = 24906                            # inf-1400 2022
 
 api_key = open("api_key.txt", 'r').readline().strip()
 canvas = canvasapi.Canvas(BASE_URL, api_key)

@@ -35,13 +35,15 @@ import datetime
 import os
 import json
 import urllib.request
-from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn, fuse_get_context
+from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn
 import zipfile
 
 CACHE_DIR = ".cache"
 
-DEBUG=False
+DEBUG = False
 DEBUG_FILE = "/tmp/canvasfs-dump.json"
+LOG_LEVEL = logging.DEBUG if DEBUG else logging.ERROR
+
 
 def filter_dict(d, remove_keys):
     """Returns a new dict with all key:values except the ones in remove_keys"""
@@ -52,10 +54,10 @@ class Entry:
     def __init__(self, pathname, cont, time_entry=None):
         """cont : dict with
         - timestamp in cont[time_entry],
-        - necessary for files: 
+        - necessary for files:
           - id,
           - url
-          - size. 
+          - size.
         time_entry = entry name in cont for picking up the entry timestamp
         """
         self.cont = cont
@@ -171,6 +173,7 @@ class ZipDirEntry(DirEntry):
 class ZipEntry(Entry):
     if DEBUG:
         debuglst = []
+
     def __init__(self, pathname, cont, time_entry=None):
         super().__init__(pathname, cont, time_entry=time_entry)
         self.is_unpacked = False
@@ -191,11 +194,11 @@ class ZipEntry(Entry):
             try:
                 with zipfile.ZipFile(open(cpath, 'rb')) as zf:
                     # Some zipfiles don't include subdirectory entries (only direct paths to files).
-                    # This will be handled in add_entry. 
+                    # This will be handled in add_entry.
                     dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
                     # add the root/mount point
                     add_entry(ZipDirEntry(dir_prefix, None, self.time))
-                    # add each of the directories and files listed in the zip file. 
+                    # add each of the directories and files listed in the zip file.
                     for info in zf.infolist():
                         path = f"{dir_prefix}/{info.filename}"
                         if info.is_dir():
@@ -204,7 +207,7 @@ class ZipEntry(Entry):
                             if DEBUG:
                                 self.debuglst.append(path)
                             add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
-            except zipfile.BadZipFile as e:
+            except zipfile.BadZipFile:
                 print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
 
             # b) scan entries and add file and
@@ -222,12 +225,11 @@ class ZipEntry(Entry):
         return ret
 
 
-
 # #####################################
 
 def add_entry(entry):
     """Add entry to file/pathnames and directories.
-    Will add necessary entries for files/directories that lead up to this file if
+    Will add necessary entries for parent files/directories that lead up to this file if
     they are missing.
     """
     if entry.pathname in files:
@@ -254,12 +256,18 @@ def add_entry(entry):
         if dadd or padd:
             # print(f"DEBUG, missing entry: {dadd:2} {padd:2} {path}")
             ne = DirEntry(path, cont)
-            if dadd:
-                dirs[ppath].append(ne)
+            # if dadd:
+            #     dirs[ppath].append(ne)
+            # if padd:
+            #     files[path] = ne
             if padd:
+                # if unknown path, it needs to be added both the the files entry and the parent directory
                 files[path] = ne
-            
-            
+                dirs[ppath].append(ne)
+            elif dadd:
+                print(f"DEBUG/TODO: Will this happen? {dadd:2} {padd:2} {path}")
+                dirs[ppath].append(ne)
+
     if isinstance(entry, (ZipDirEntry, ZipFileEntry)):
         logging.log(logging.DEBUG, f"add_entry zip file/dir entry for path {entry.pathname} in dir {entry.dirname}")
 
@@ -314,7 +322,7 @@ if __name__ == '__main__':
     parser.add_argument('mount')
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.ERROR)
+    logging.basicConfig(level=LOG_LEVEL)
 
     if args.cache:
         CACHE_DIR = args.cache
@@ -325,7 +333,7 @@ if __name__ == '__main__':
     # The json file contains a list of assignments.
     assignments = json.loads(open(f"{CACHE_DIR}/assignments.json").read())
     # dirs is used to keep track of files and subdirectories in each directory.
-    # files are each file/directory in the filesystem with an Entry object for each file.
+    # files are each file/directory in the filesystem with an Entry object for each file (key = path).
     dirs = defaultdict(list)
     files = {}
 
