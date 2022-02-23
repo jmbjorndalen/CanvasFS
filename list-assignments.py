@@ -8,13 +8,50 @@ import json
 
 assignments = json.loads(open('.cache/assignments.json').read())
 
+
+def newest_update(subinfo):
+    """Recursively searches subinfo for 'updated_at' or 'submitted_at' and returns the most recent date"""
+    def get_date(d, key):
+        v = d.get(key, '')
+        if v is None:
+            v = ''
+        # if v != '':
+        #    print("GOT ", key, v)
+        return v
+
+    def get_seq(sub):
+        if isinstance(sub, list):
+            return sub
+        if isinstance(sub, dict):
+            return sub.values()
+        return []
+    cur = ''
+    if isinstance(subinfo, dict):
+        # cur = max('', get_date(subinfo, 'submitted_at'), get_date(subinfo, 'updated_at'))
+        cur = max('', get_date(subinfo, 'submitted_at'))
+    for c in get_seq(subinfo):
+        cur = max(cur, newest_update(c))
+
+    return cur
+
+
+def sort_str(sub):
+    """latest submission date + student name"""
+    name = sub.get('student_name', '0zzzzz')
+    tm = newest_update(sub)
+    if tm == '':
+        tm = '0'
+    # print(name, tm)
+    return tm + name
+
+
 total_files = 0
 for a in assignments:
     print(f"---------------------\n{a['name']}---------------\n")
     # Probably the only useful info about the user here is the name.
     # studs = a['f_studs']
     subs = a['f_submissions']
-    for sub in subs:
+    for sub in sorted(subs, key=sort_str):
         # sub.keys: ['assignment_id', 'attempt', 'body',
         # 'cached_due_date', 'course_id', 'display_name',
         # 'entered_grade', 'entered_score', 'excused',
