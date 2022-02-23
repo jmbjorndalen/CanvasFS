@@ -63,12 +63,13 @@ class Entry:
         self.cont = cont
         self.pathname = pathname
         p = Path(pathname)
-        self.dirname = str(p.parent)
+        self.parent = str(p.parent)
         self.fname = str(p.name)
-        self.time = 0
         if (dts := cont.get(time_entry, None)) is not None:
             dt = datetime.datetime.strptime(dts, '%Y-%m-%dT%H:%M:%SZ')
             self.time = dt.timestamp()
+        else:
+            self.time = cont.get('_time', 0)
         self.size = self.cont.get('size', 0)
 
     def _cache_path(self, fid):
@@ -196,13 +197,14 @@ class ZipDirEntry(DirEntry):
 class ZipEntry(Entry):
     debuglst = []
 
-    def __init__(self, pathname, cont, time_entry=None):
+    def __init__(self, pathname, cont, ctx, time_entry=None):
         super().__init__(pathname, cont, time_entry=time_entry)
         self.is_unpacked = False
         self._data = None
-        self.check_unpack()
+        self.check_unpack(ctx)
+        self.ctx = ctx
 
-    def check_unpack(self):
+    def check_unpack(self, ctx):
         if self.is_unpacked:
             return
         fid = self.cont['id']
@@ -219,15 +221,15 @@ class ZipEntry(Entry):
                     # This will be handled in add_entry.
                     dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
                     # add the root/mount point
-                    add_entry(ZipDirEntry(dir_prefix, None, self.time))
+                    ctx.add_entry(ZipDirEntry(dir_prefix, None, self.time))
                     # add each of the directories and files listed in the zip file.
                     for info in zf.infolist():
                         path = f"{dir_prefix}/{info.filename}"
                         if info.is_dir():
-                            add_entry(ZipDirEntry(path, info))
+                            ctx.add_entry(ZipDirEntry(path, info))
                         else:
                             self.debuglst.append(path)
-                            add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
+                            ctx.add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
             except zipfile.BadZipFile:
                 print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
 
@@ -246,85 +248,9 @@ class ZipEntry(Entry):
         return ret
 
 
-# #####################################
-
-def add_entry(entry):
-    """Add entry to file/pathnames and directories.
-    Will add necessary entries for parent files/directories that lead up to this file if
-    they are missing.
-    """
-    if entry.pathname in files:
-        # TODO: check if file entry exists already (both for file entry and before appending to dirs)
-        print(f"WARNING: {entry.pathname} already exists in the file list")
-        return
-    files[entry.pathname] = entry
-    dirs[entry.dirname].append(entry)
-
-    # Need to ensure that the entire path from root to this entry is present in dirs (and that subdirs leading to this entry are present)
-    # At this point:
-    # - entry.pathname is present in files
-    # - entry.dirname is present in dirs
-    # - entry.dirname may not be present in files
-    # - paths leading up to this path may not be present in either files or dirs
-    cont = {'time': entry.time}
-    for parent in Path(entry.pathname).parents:
-        # Check that each of the parents have a parent pointing to them.
-        # Need entries in both 'files' and 'dirs' to avoid failed lookups
-        path = str(parent)
-        ppath = str(parent.parent)
-        dadd = ppath not in dirs
-        padd = path not in files
-        if dadd or padd:
-            # print(f"DEBUG, missing entry: {dadd:2} {padd:2} {path}")
-            ne = DirEntry(path, cont)
-            # if dadd:
-            #     dirs[ppath].append(ne)
-            # if padd:
-            #     files[path] = ne
-            if padd:
-                # if unknown path, it needs to be added both the the files entry and the parent directory
-                files[path] = ne
-                if path != ppath:   # avoids adding a directory entry to its own directory, which would be an error (typically for root entries)
-                    dirs[ppath].append(ne)
-            elif dadd:
-                print(f"DEBUG/TODO: Will this happen? {dadd:2} {padd:2} {path}")
-                dirs[ppath].append(ne)
-
-    if isinstance(entry, (ZipDirEntry, ZipFileEntry)):
-        logging.log(logging.DEBUG, f"add_entry zip file/dir entry for path {entry.pathname} in dir {entry.dirname}")
-
-
-# This is based on the Context example from the fusepy distribution.
+# Some of this class is based on the Context example from the fusepy distribution.
 class Context(LoggingMixIn, Operations):
     'Example filesystem to demonstrate fuse_get_context()'
-
-    def getattr(self, path, fh=None):
-        # uid, gid, pid = fuse_get_context()
-        if (entry := files.get(path, None)):
-            return entry.getattr()
-
-        if path == "/":
-            # TODO: should consider making a "fake" root entry to avoid this type of code.
-            dtime = time()
-            return dict(st_mode=(S_IFDIR | 0o555),
-                        st_nlink=2,
-                        st_ctime=dtime,
-                        st_mtime=dtime,
-                        st_atime=dtime)
-
-        raise FuseOSError(ENOENT)
-
-    def read(self, path, size, offset, fh):
-        # logging.log(logging.DEBUG, f"**read**({path}, {size}, {offset}, {fh})")
-        if path in files:
-            e = files[path]
-            return e.read(size, offset)
-        raise RuntimeError('unexpected path: %r' % path)
-
-    def readdir(self, path, fh):
-        # logging.log(logging.DEBUG, f"readdir: {path} {[d.fname for d in dirs.get(path, [])]}")
-        return [d.fname for d in dirs.get(path, [])]
-
     # Disable unused operations:
     access = None
     flush = None
@@ -335,6 +261,115 @@ class Context(LoggingMixIn, Operations):
     release = None
     releasedir = None
     statfs = None
+
+    def __init__(self):
+        # dirs is used to keep track of files and subdirectories in each directory.
+        # files are each file/directory in the filesystem with an Entry object for each file (key = path).
+        super().__init__()
+        self.dirs = defaultdict(list)
+        self.files = {}
+
+    def getattr(self, path, fh=None):
+        # uid, gid, pid = fuse_get_context()
+        if (entry := self.files.get(path, None)):
+            return entry.getattr()
+        raise FuseOSError(ENOENT)
+
+    def read(self, path, size, offset, fh):
+        # logging.log(logging.DEBUG, f"**read**({path}, {size}, {offset}, {fh})")
+        if path in self.files:
+            e = self.files[path]
+            return e.read(size, offset)
+        raise RuntimeError('unexpected path: %r' % path)
+
+    def readdir(self, path, fh):
+        # logging.log(logging.DEBUG, f"readdir: {path} {[d.fname for d in dirs.get(path, [])]}")
+        return [d.fname for d in self.dirs.get(path, [])]
+
+    def _add_file(self, fn, entry):
+        """Adds a file and make sure it's seen in the parent/directory."""
+        if fn in self.files:
+            print(f"WARNING: {fn} already exists in the file list")
+            return
+        self.files[fn] = entry
+        # Make sure the file is also seen in the parent directory
+        self._add_dirent(entry.parent, entry)
+
+    def _add_dirent(self, dpath, entry):
+        """Adds an entry to the directory it's contained in.
+        Also ensures that there is an entry for the directory in "files".
+        """
+        if dpath == entry.pathname:
+            # TODO: too sleepy now, but it looks like "/" is added for every file or subdirectory of '/', which makes sense.
+            # Probably, this should be considered a special case where the root is updated with the timestamp of the most recent
+            # of the child nodes.
+            if dpath != "/":
+                print(f"WARNING: trying to add directory to itself {dpath} {entry}")
+                print(self.dirs.get("/"))
+                print(self.files.get("/"))
+            return
+        self.dirs[dpath].append(entry)
+        if dpath not in self.files:
+            # The parent directory needs a directory entry
+            cont = {'_time': entry.time}
+            ne = DirEntry(dpath, cont)
+            self._add_file(dpath, ne)
+
+    def add_entry(self, entry):
+        """Add entry to file/pathnames and directories.
+        Will add necessary entries for parent files/directories that lead up to this file if
+        they are missing.
+        """
+        self._add_file(entry.pathname, entry)
+        if isinstance(entry, (ZipDirEntry, ZipFileEntry)):
+            logging.log(logging.DEBUG, f"add_entry zip file/dir entry for path {entry.pathname} in dir {entry.parent}")
+
+
+def mount_fs():
+    # Make sure the cache directory exists
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+    ctx = Context()
+
+    # The json file contains a list of assignments.
+    assignments = json.loads(open(f"{CACHE_DIR}/assignments.json").read())
+
+    # For each level in the hiearchy, a .meta file is added with json encoded metadata for that level in the directory.
+    # The information is filtered to avoid replicating everything from a further in at the root level.
+    for a in assignments:
+        # Top level directory for each assignment.
+        a_path = '/' + a['name']
+        ctx.add_entry(DirEntry(a_path, a, time_entry='created_at'))
+        ctx.add_entry(MetaEntry(a_path, a, time_entry='updated_at', filter_entries={'f_studs', 'f_submissions'}))
+        # logging.log(logging.DEBUG, f"{dirs}")
+        for sub in a['f_submissions']:
+            # Each submission is in a subdirectory with the name of the student.
+            sub_path = f"{a_path}/{sub['student_name']}"
+            # Students that haven't submitted still show up, but submitted_at is non-existing. This gives us a 0 epoch time.
+            ctx.add_entry(DirEntry(sub_path, sub, time_entry='submitted_at'))
+            ctx.add_entry(MetaEntry(sub_path, sub, time_entry='submitted_at', filter_entries={'submission_history'}))
+            for s in sub['submission_history']:
+                # Each version of the submission is listed in a separate subdirectory
+                if s['attempt'] is None:
+                    # Student hasn't submitted anything.
+                    continue
+                attempt_path = f"{sub_path}/{s['attempt']}"
+                ctx.add_entry(DirEntry(attempt_path, s, time_entry='submitted_at'))
+                ctx.add_entry(MetaEntry(attempt_path, s, time_entry='submitted_at'))
+                for att in s.get('attachments', []):
+                    # Each file in the submission
+                    fpath = f"{attempt_path}/{att['filename']}"
+                    if fpath.lower().endswith('.zip'):
+                        # Note: the 'unp' directory is not added until the zip file is downloaded (by reading it)
+                        # The reason for this is to avoid triggering downloads of all zip files using "find", file managers etc.
+                        ctx.add_entry(ZipEntry(fpath, att, ctx, time_entry='modified_at'))
+                    else:
+                        ctx.add_entry(Entry(fpath, att, time_entry='modified_at'))
+
+    ctx.add_entry(DebugEntry())
+    print("Ready")
+
+    FUSE(ctx, args.mount, foreground=True, ro=True, allow_other=True)
 
 
 if __name__ == '__main__':
@@ -349,50 +384,4 @@ if __name__ == '__main__':
     if args.cache:
         CACHE_DIR = args.cache
 
-    # Make sure the cache directory exists
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
-    # The json file contains a list of assignments.
-    assignments = json.loads(open(f"{CACHE_DIR}/assignments.json").read())
-    # dirs is used to keep track of files and subdirectories in each directory.
-    # files are each file/directory in the filesystem with an Entry object for each file (key = path).
-    dirs = defaultdict(list)
-    files = {}
-
-    # For each level in the hiearchy, a .meta file is added with json encoded metadata for that level in the directory.
-    # The information is filtered to avoid replicating everything from a further in at the root level.
-    for a in assignments:
-        # Top level directory for each assignment.
-        subs = a['f_submissions']
-        a_path = '/' + a['name']
-        add_entry(DirEntry(a_path, a, time_entry='created_at'))
-        add_entry(MetaEntry(a_path, a, time_entry='updated_at', filter_entries={'f_studs', 'f_submissions'}))
-        # logging.log(logging.DEBUG, f"{dirs}")
-        for sub in a['f_submissions']:
-            # Each submission is in a subdirectory with the name of the student.
-            sub_path = f"{a_path}/{sub['student_name']}"
-            # Students that haven't submitted still show up, but submitted_at is non-existing. This gives us a 0 epoch time.
-            add_entry(DirEntry(sub_path, sub, time_entry='submitted_at'))
-            add_entry(MetaEntry(sub_path, sub, time_entry='submitted_at', filter_entries={'submission_history'}))
-            for s in sub['submission_history']:
-                # Each version of the submission is listed in a separate subdirectory
-                if s['attempt'] is None:
-                    # Student hasn't submitted anything.
-                    continue
-                attempt_path = f"{sub_path}/{s['attempt']}"
-                add_entry(DirEntry(attempt_path, s, time_entry='submitted_at'))
-                add_entry(MetaEntry(attempt_path, s, time_entry='submitted_at'))
-                for att in s.get('attachments', []):
-                    # Each file in the submission
-                    fpath = f"{attempt_path}/{att['filename']}"
-                    if fpath.lower().endswith('.zip'):
-                        # Note: the 'unp' directory is not added until the zip file is downloaded (by reading it)
-                        # The reason for this is to avoid triggering downloads of all zip files using "find", file managers etc.
-                        add_entry(ZipEntry(fpath, att, time_entry='modified_at'))
-                    else:
-                        add_entry(Entry(fpath, att, time_entry='modified_at'))
-
-    add_entry(DebugEntry())
-    print("Ready")
-
-    fuse = FUSE(Context(), args.mount, foreground=True, ro=True, allow_other=True)
+    mount_fs()
