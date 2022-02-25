@@ -201,10 +201,10 @@ class ZipEntry(Entry):
         super().__init__(pathname, cont, time_entry=time_entry)
         self.is_unpacked = False
         self._data = None
-        self.check_unpack(ctx)
         self.ctx = ctx
+        self.check_unpack()
 
-    def check_unpack(self, ctx):
+    def check_unpack(self):
         if self.is_unpacked:
             return
         fid = self.cont['id']
@@ -221,15 +221,15 @@ class ZipEntry(Entry):
                     # This will be handled in add_entry.
                     dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
                     # add the root/mount point
-                    ctx.add_entry(ZipDirEntry(dir_prefix, None, self.time))
+                    self.ctx.add_entry(ZipDirEntry(dir_prefix, None, self.time))
                     # add each of the directories and files listed in the zip file.
                     for info in zf.infolist():
                         path = f"{dir_prefix}/{info.filename}"
                         if info.is_dir():
-                            ctx.add_entry(ZipDirEntry(path, info))
+                            self.ctx.add_entry(ZipDirEntry(path, info))
                         else:
                             self.debuglst.append(path)
-                            ctx.add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
+                            self.ctx.add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
             except zipfile.BadZipFile:
                 print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
 
