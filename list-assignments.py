@@ -45,6 +45,28 @@ def sort_str(sub):
     return tm + name
 
 
+def get_similarities(sub):
+    # each submission has a 'submission_history' list of sub-submissions.
+    # each sub-submission has a 'turnitin_data' with 'attachment_x' as keys,
+    # and 'attachment_id' : x as id for the attachment, and 'similiarity_score' : (null or some float)
+    # as a score. Need to flatten this to a dict of 'id/x' : score
+    scores = {}
+    # print('SUB', sub)
+    for subsub in sub['submission_history']:
+        # print('SUBSUB', subsub)
+        for td in subsub.get('turnitin_data', {}).values():
+            if not isinstance(td, dict):
+                # some might have extra info here. Skip that.
+                continue
+            # print('......', td)
+            scores[td['attachment_id']] = td['similarity_score']
+    return scores
+
+
+def attr(att, key):
+    return f"{key}={att.get(key, '_NA_')}"
+
+
 total_files = 0
 for a in assignments:
     print(f"---------------------\n{a['name']}---------------\n")
@@ -64,11 +86,14 @@ for a in assignments:
         # 'submission_type', 'submitted_at', 'url', 'user_id',
         # 'workflow_state']
         # also: added student_name in the get-submission-info file
-        print(sub['student_name'], sub['excused'], sub['attempt'], sub['workflow_state'], sub['grade'], sub['entered_grade'])
+        turnitin_scores = get_similarities(sub)
+        max_score = max([0] + [v for v in turnitin_scores.values() if type(v) == float])
+        print(sub['student_name'], newest_update(sub), sub['excused'], sub['attempt'], sub['workflow_state'], sub['grade'], sub['entered_grade'], f"{max_score=}")
         # print(sub['student_name'])# , sub['excused'], sub['attempt'], sub['workflow_state'], sub['grade'], sub['entered_grade'])
         for s in sub['submission_history']:
             print("      ", s['attempt'], s["submitted_at"], s['cached_due_date'])
             for att in s.get('attachments', []):
+                score = turnitin_scores[att.get('id', None)]
                 # url includes authentication, so can download it easily
                 # att.keys: ['content-type', 'created_at', 'display_name',
                 # 'filename', 'folder_id', 'hidden',
@@ -77,7 +102,9 @@ for a in assignments:
                 # 'modified_at', 'preview_url', 'size',
                 # 'thumbnail_url', 'unlock_at', 'updated_at',
                 # 'upload_status', 'url', 'uuid']
-                print("             ", att['filename'], att['updated_at'], att['size'], att['url'])
+                print("             ", attr(att, 'filename'), attr(att, 'updated_at'), attr(att, 'size'),
+                      f"{score=}", attr(att, 'url'))
                 total_files += 1
+        print()
 # print(sorted(list(att.keys())))
 print("Total number of files", total_files)
