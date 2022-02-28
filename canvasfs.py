@@ -6,13 +6,17 @@ Metadata for a given level in a hierarchy is included as .meta files (json forma
 
 Files are downloaded from Canvas when opened in the filesystem. Cached files are stored in CACHE_DIR (default .cache).
 
-Zip files
+Zip files / archives
 ------
 ZipFiles will be automatically mounted as '<pathname>.unp' once they are cached locally. This means that
 once you try to read a zip file, it will be available as an unpacked directory locally.
 
 The reason for not providing any 'unzip' directory before downloading the file is that this could cause
 accidental download of all zip files if a 'find' or another tool tried to traverse the unzip directories.
+
+NB: canvasfs now uses libarchive-c to unpack various archive formats.
+- https://github.com/Changaco/python-libarchive-c
+- ubuntu: sudo apt install python3-libarchive-c
 
 
 TODO
@@ -33,10 +37,12 @@ from pathlib import Path
 from collections import defaultdict
 import datetime
 import os
+import io
 import json
 import urllib.request
 from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn
 import zipfile
+import libarchive
 
 CACHE_DIR = ".cache"
 
@@ -160,7 +166,7 @@ class DebugEntry(Entry):
         return self.meta_str[start:end]
 
 
-# ###### Zip Files ######################
+# ###### Zip Files / archives ######################
 
 # TODO: kludgy, but let's figure out how to do this before cleaning it up.
 
@@ -168,9 +174,7 @@ class ZipFileEntry(Entry):
     def __init__(self, path, info, data):
         # A little bit of band-aid. Should modify the hierarchy further up.
         # Need to pick from info object
-        dt = datetime.datetime(*info.date_time)
-        d = dict(time=dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
-        super().__init__(path, d, time_entry='time')
+        super().__init__(path, info)
         self._data = data
         self.size = len(data)
 
@@ -179,18 +183,11 @@ class ZipFileEntry(Entry):
 
 
 class ZipDirEntry(DirEntry):
-    def __init__(self, path, info, dtime=None):
-        # A little bit of band-aid. Should modify the hierarchy further up.
-        if dtime is None:
-            # Need to pick from info object
-            dt = datetime.datetime(*info.date_time)
-        else:
-            dt = datetime.datetime.fromtimestamp(dtime)
-        d = dict(time=dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
+    def __init__(self, path, info):
         if path.endswith("/"):
             # Remove trailing slash
             path = path[:-1]
-        super().__init__(path, d, time_entry='time')
+        super().__init__(path, info)
         logging.log(logging.DEBUG, f"ZipDirEntry {path}")
 
 
@@ -216,20 +213,27 @@ class ZipEntry(Entry):
                 self._data = self.get_offline_file(fid, url)
 
             try:
-                with zipfile.ZipFile(open(cpath, 'rb')) as zf:
+                with libarchive.file_reader(cpath) as zf:
                     # Some zipfiles don't include subdirectory entries (only direct paths to files).
                     # This will be handled in add_entry.
                     dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
                     # add the root/mount point
-                    self.ctx.add_entry(ZipDirEntry(dir_prefix, None, self.time))
+                    self.ctx.add_entry(ZipDirEntry(dir_prefix, {'_time': self.time}))
                     # add each of the directories and files listed in the zip file.
-                    for info in zf.infolist():
-                        path = f"{dir_prefix}/{info.filename}"
-                        if info.is_dir():
+                    for entry in zf:
+                        path = f"{dir_prefix}/{entry.pathname}"
+                        info = {"_time": max(entry.ctime, entry.mtime)}
+                        if entry.isdir:
                             self.ctx.add_entry(ZipDirEntry(path, info))
-                        else:
+                        elif entry.isreg:
+                            bio = io.BytesIO()
+                            for block in entry.get_blocks():
+                                bio.write(block)
+                            bio.seek(0)
                             self.debuglst.append(path)
-                            self.ctx.add_entry(ZipFileEntry(path, info, zf.read(info.filename)))
+                            self.ctx.add_entry(ZipFileEntry(path, info, bio.read()))
+                        else:
+                            print(f"WARNING: ZipEntry: {path} is of unhandled file type {entry.filetype} {entry.issym=}")
             except zipfile.BadZipFile:
                 print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
 
