@@ -27,6 +27,7 @@ TODO
 - configurable cache directory.
 - rm on a file: remove from cache.
   We may not need to remove zip files that are already mounted from memory even if we remove the file from the cache directory.
+- archives inside archives. (students that submit a tarball inside a zip because canvas refuses to accept zips)
 """
 
 import logging
@@ -235,12 +236,8 @@ class ZipEntry(Entry):
                         else:
                             print(f"WARNING: ZipEntry: {path} is of unhandled file type {entry.filetype} {entry.issym=}")
             except zipfile.BadZipFile:
+                # TODO: this exception is from zipFile and will probably never be thrown by libarchive.
                 print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
-
-            # b) scan entries and add file and
-            # TODO: need a separate directory and file entry type for this as we need to read from the zip file
-            # instead of the cache.
-            pass
 
     def read(self, size, offset):
         if self._data is None:
@@ -251,10 +248,17 @@ class ZipEntry(Entry):
         ret = self._data[offset:offset + size]
         return ret
 
+    @classmethod
+    def possible_archive(self, fpath):
+        lfpath = fpath.lower()
+        return lfpath.endswith('.zip') or lfpath.endswith('.rar') or \
+            lfpath.endswith('.tar.gz') or lfpath.endswith('.tgz') or \
+            lfpath.endswith('.7z')
+
 
 # Some of this class is based on the Context example from the fusepy distribution.
 class Context(LoggingMixIn, Operations):
-    'Example filesystem to demonstrate fuse_get_context()'
+    'Provides the main filesystem functionality and keeps tracks of files and directories.'
     # Disable unused operations:
     access = None
     flush = None
@@ -363,7 +367,7 @@ def mount_fs():
                 for att in s.get('attachments', []):
                     # Each file in the submission
                     fpath = f"{attempt_path}/{att['filename']}"
-                    if fpath.lower().endswith('.zip'):
+                    if ZipEntry.possible_archive(fpath):
                         # Note: the 'unp' directory is not added until the zip file is downloaded (by reading it)
                         # The reason for this is to avoid triggering downloads of all zip files using "find", file managers etc.
                         ctx.add_entry(ZipEntry(fpath, att, ctx, time_entry='modified_at'))
