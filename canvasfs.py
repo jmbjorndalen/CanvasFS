@@ -223,7 +223,7 @@ class ZipEntry(Entry):
                     # add each of the directories and files listed in the zip file.
                     for entry in zf:
                         path = f"{dir_prefix}/{entry.pathname}"
-                        info = {"_time": max(entry.ctime, entry.mtime)}
+                        info = {"_time": max(t for t in (entry.ctime, entry.mtime) if t is not None)}
                         if entry.isdir:
                             self.ctx.add_entry(ZipDirEntry(path, info))
                         elif entry.isreg:
@@ -234,7 +234,10 @@ class ZipEntry(Entry):
                             self.debuglst.append(path)
                             self.ctx.add_entry(ZipFileEntry(path, info, bio.read()))
                         else:
-                            print(f"WARNING: ZipEntry: {path} is of unhandled file type {entry.filetype} {entry.issym=}")
+                            if entry.issym:
+                                print(f"NB (ZipEntry): skipping symbolic link: {path}")
+                            else:
+                                print(f"WARNING: ZipEntry: {path} is of unhandled file type {entry.filetype} {entry.issym=}")
             except zipfile.BadZipFile:
                 # TODO: this exception is from zipFile and will probably never be thrown by libarchive.
                 print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
@@ -297,7 +300,10 @@ class Context(LoggingMixIn, Operations):
     def _add_file(self, fn, entry):
         """Adds a file and make sure it's seen in the parent/directory."""
         if fn in self.files:
-            print(f"WARNING: {fn} already exists in the file list")
+            # This typically happens if zip or rar files have an entry for a subdirectory after
+            # files contained in that subdirectory.
+            if not isinstance(entry, DirEntry):
+                print(f"WARNING: {fn} already exists in the file list. {type(entry)}.")
             return
         self.files[fn] = entry
         # Make sure the file is also seen in the parent directory
