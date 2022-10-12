@@ -41,7 +41,7 @@ import os
 import io
 import json
 import urllib.request
-from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn
+from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 import zipfile
 import libarchive
 
@@ -54,7 +54,7 @@ LOG_LEVEL = logging.ERROR
 
 def filter_dict(d, remove_keys):
     """Returns a new dict with all key:values except the ones in remove_keys"""
-    return {k : v for k, v in d.items() if k not in remove_keys}
+    return {k: v for k, v in d.items() if k not in remove_keys}
 
 
 class Entry:
@@ -96,13 +96,14 @@ class Entry:
             with open(cpath, 'wb') as f:
                 f.write(data)
             return data
-        logging.log(logging.DEBUG, f"TODO: check results from reading file {fid} {url} {r.status}")
+        logging.log(
+            logging.DEBUG, f"TODO: check results from reading file {fid} {url} {r.status}")
         raise RuntimeError("Could not get file")
 
     def read(self, size, offset):
         """Reads a chunk from a file (potentially downloading and cacheing the file if necessary)."""
         start = offset
-        end  = offset + size
+        end = offset + size
         fid = self.cont['id']
         url = self.cont['url']
         data = self.get_offline_file(fid, url)
@@ -133,23 +134,27 @@ class DirEntry(Entry):
 
 class MetaEntry(Entry):
     """Provide a human readable version of the metadata with prettified .json files added as .meta files in directories."""
+
     def __init__(self, pathname, cont, time_entry=None, filter_entries=None):
-        d = cont if filter_entries is None else filter_dict(cont, filter_entries)
+        d = cont if filter_entries is None else filter_dict(
+            cont, filter_entries)
         super().__init__(pathname + "/.meta", d, time_entry=time_entry)
-        self.meta_str = (json.dumps(cont, sort_keys=True, indent=4) + "\n").encode('utf-8')
+        self.meta_str = (json.dumps(cont, sort_keys=True,
+                         indent=4) + "\n").encode('utf-8')
         self.time = time()
         self.size = len(self.meta_str)
 
     def read(self, size, offset):
         """Reads a chunk from a file (potentially downloading and cacheing the file if necessary)."""
         start = offset
-        end  = offset + size
+        end = offset + size
         return self.meta_str[start:end]
 
 
 class DebugEntry(Entry):
     DEBUG_FILE = "/.debuginfo.json"
     """A debug file that provides json data about the current mounted filesystem"""
+
     def __init__(self, pathname=None, cont=None, time_entry=None, filter_entries=None):
         d = {}
         super().__init__(self.DEBUG_FILE, d, time_entry=time_entry)
@@ -158,12 +163,13 @@ class DebugEntry(Entry):
         self.size = len(self.meta_str)
 
     def _update_str(self):
-        self.meta_str = (json.dumps({'unzipped_files' : ZipEntry.debuglst}, sort_keys=True, indent=4) + "\n").encode('utf-8')
+        self.meta_str = (json.dumps(
+            {'unzipped_files': ZipEntry.debuglst}, sort_keys=True, indent=4) + "\n").encode('utf-8')
 
     def read(self, size, offset):
         """Reads a chunk from a file (potentially downloading and cacheing the file if necessary)."""
         start = offset
-        end  = offset + size
+        end = offset + size
         return self.meta_str[start:end]
 
 
@@ -219,11 +225,13 @@ class ZipEntry(Entry):
                     # This will be handled in add_entry.
                     dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
                     # add the root/mount point
-                    self.ctx.add_entry(ZipDirEntry(dir_prefix, {'_time': self.time}))
+                    self.ctx.add_entry(ZipDirEntry(
+                        dir_prefix, {'_time': self.time}))
                     # add each of the directories and files listed in the zip file.
                     for entry in zf:
                         path = f"{dir_prefix}/{entry.pathname}"
-                        info = {"_time": max(t for t in (entry.ctime, entry.mtime) if t is not None)}
+                        info = {"_time": max(t for t in (
+                            entry.ctime, entry.mtime) if t is not None)}
                         if entry.isdir:
                             self.ctx.add_entry(ZipDirEntry(path, info))
                         elif entry.isreg:
@@ -232,15 +240,19 @@ class ZipEntry(Entry):
                                 bio.write(block)
                             bio.seek(0)
                             self.debuglst.append(path)
-                            self.ctx.add_entry(ZipFileEntry(path, info, bio.read()))
+                            self.ctx.add_entry(
+                                ZipFileEntry(path, info, bio.read()))
                         else:
                             if entry.issym:
-                                print(f"NB (ZipEntry): skipping symbolic link: {path}")
+                                print(
+                                    f"NB (ZipEntry): skipping symbolic link: {path}")
                             else:
-                                print(f"WARNING: ZipEntry: {path} is of unhandled file type {entry.filetype} {entry.issym=}")
+                                print(
+                                    f"WARNING: ZipEntry: {path} is of unhandled file type {entry.filetype} {entry.issym=}")
             except zipfile.BadZipFile:
                 # TODO: this exception is from zipFile and will probably never be thrown by libarchive.
-                print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
+                print(
+                    f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
 
     def read(self, size, offset):
         if self._data is None:
@@ -303,7 +315,8 @@ class Context(LoggingMixIn, Operations):
             # This typically happens if zip or rar files have an entry for a subdirectory after
             # files contained in that subdirectory.
             if not isinstance(entry, DirEntry):
-                print(f"WARNING: {fn} already exists in the file list. {type(entry)}.")
+                print(
+                    f"WARNING: {fn} already exists in the file list. {type(entry)}.")
             return
         self.files[fn] = entry
         # Make sure the file is also seen in the parent directory
@@ -318,7 +331,8 @@ class Context(LoggingMixIn, Operations):
             # Probably, this should be considered a special case where the root is updated with the timestamp of the most recent
             # of the child nodes.
             if dpath != "/":
-                print(f"WARNING: trying to add directory to itself {dpath} {entry}")
+                print(
+                    f"WARNING: trying to add directory to itself {dpath} {entry}")
                 print(self.dirs.get("/"))
                 print(self.files.get("/"))
             return
@@ -336,7 +350,8 @@ class Context(LoggingMixIn, Operations):
         """
         self._add_file(entry.pathname, entry)
         if isinstance(entry, (ZipDirEntry, ZipFileEntry)):
-            logging.log(logging.DEBUG, f"add_entry zip file/dir entry for path {entry.pathname} in dir {entry.parent}")
+            logging.log(
+                logging.DEBUG, f"add_entry zip file/dir entry for path {entry.pathname} in dir {entry.parent}")
 
 
 def mount_fs():
@@ -354,31 +369,37 @@ def mount_fs():
         # Top level directory for each assignment.
         a_path = '/' + a['name']
         ctx.add_entry(DirEntry(a_path, a, time_entry='created_at'))
-        ctx.add_entry(MetaEntry(a_path, a, time_entry='updated_at', filter_entries={'f_studs', 'f_submissions'}))
+        ctx.add_entry(MetaEntry(a_path, a, time_entry='updated_at',
+                      filter_entries={'f_studs', 'f_submissions'}))
         # logging.log(logging.DEBUG, f"{dirs}")
         for sub in a['f_submissions']:
             # Each submission is in a subdirectory with the name of the student.
             sub_path = f"{a_path}/{sub['student_name']}"
             # Students that haven't submitted still show up, but submitted_at is non-existing. This gives us a 0 epoch time.
             ctx.add_entry(DirEntry(sub_path, sub, time_entry='submitted_at'))
-            ctx.add_entry(MetaEntry(sub_path, sub, time_entry='submitted_at', filter_entries={'submission_history'}))
+            ctx.add_entry(MetaEntry(
+                sub_path, sub, time_entry='submitted_at', filter_entries={'submission_history'}))
             for s in sub['submission_history']:
                 # Each version of the submission is listed in a separate subdirectory
                 if s['attempt'] is None:
                     # Student hasn't submitted anything.
                     continue
                 attempt_path = f"{sub_path}/{s['attempt']}"
-                ctx.add_entry(DirEntry(attempt_path, s, time_entry='submitted_at'))
-                ctx.add_entry(MetaEntry(attempt_path, s, time_entry='submitted_at'))
+                ctx.add_entry(DirEntry(attempt_path, s,
+                              time_entry='submitted_at'))
+                ctx.add_entry(MetaEntry(attempt_path, s,
+                              time_entry='submitted_at'))
                 for att in s.get('attachments', []):
                     # Each file in the submission
                     fpath = f"{attempt_path}/{att['filename']}"
                     if ZipEntry.possible_archive(fpath):
                         # Note: the 'unp' directory is not added until the zip file is downloaded (by reading it)
                         # The reason for this is to avoid triggering downloads of all zip files using "find", file managers etc.
-                        ctx.add_entry(ZipEntry(fpath, att, ctx, time_entry='modified_at'))
+                        ctx.add_entry(ZipEntry(fpath, att, ctx,
+                                      time_entry='modified_at'))
                     else:
-                        ctx.add_entry(Entry(fpath, att, time_entry='modified_at'))
+                        ctx.add_entry(
+                            Entry(fpath, att, time_entry='modified_at'))
 
     ctx.add_entry(DebugEntry())
     print("Ready")
