@@ -41,7 +41,7 @@ import os
 import io
 import json
 import urllib.request
-from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn
+from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 import zipfile
 import libarchive
 
