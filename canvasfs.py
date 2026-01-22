@@ -27,7 +27,9 @@ TODO
 - configurable cache directory.
 - rm on a file: remove from cache.
   We may not need to remove zip files that are already mounted from memory even if we remove the file from the cache directory.
-- archives inside archives. (students that submit a tarball inside a zip because canvas refuses to accept zips)
+  - or maybe just "unload" ?
+  - files may not need to be loaded or scanned until somebody descends into the .unp directory. 
+- archives inside archives. (students that submit a tarball inside a zip because canvas refuses to accept tarballs)
 """
 
 import logging

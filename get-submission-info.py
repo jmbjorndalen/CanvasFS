@@ -7,6 +7,9 @@ The information is stored in a json file as data/assignments.json.
 import canvasapi
 import json
 import os
+import argparse
+import datetime
+
 
 BASE_URL  = "https://uit.instructure.com/"   # Canvas for uit.no
 
@@ -15,6 +18,10 @@ COURSE_ID = 11589                            # inf-1400 2019
 COURSE_ID = 16497                            # inf-1400 2020
 COURSE_ID = 21176                            # inf-1400 2021
 COURSE_ID = 24906                            # inf-1400 2022
+COURSE_ID = 33168                            # inf-2201 2024
+COURSE_ID = 36446                            # inf-2201 2025
+COURSE_ID = 38608                            # inf-3201 2025
+COURSE_ID = 40994                            # inf-2203 2026
 
 # To view submissions after a course is closed, or to view students that have withdrawn from the course.
 INCLUDE_COMPLETED = True
@@ -47,6 +54,7 @@ def subm_to_dict(subm, studs):
         'grade' : subm.grade,
         'entered_grade' : subm.entered_grade,
         'submission_history' : subm.submission_history,
+        'submission_comments' : subm.submission_comments,
         'student_name' : studs[subm.user_id]['display_name']
     }
 
@@ -70,6 +78,10 @@ def get_compl_submissions(assignment):
             for stud_id in students_compl]
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument("-b", action="store_true", help="Store a backup file with the date in the name")
+args = parser.parse_args()
+
 # Make sure the cache directory exists
 os.makedirs(".cache", exist_ok=True)
 print("Fetching assignments and students")
@@ -83,6 +95,8 @@ print(f"  - {len(students)} active students")
 students_compl = {s.id : s for s in course.get_users(enrollment_state=['completed'], include=['enrollments'])
                   if is_completed_student(s)}
 print(f"  - {len(students_compl)} completed students")
+for sid, s in students_compl.items():
+    print("      - ", s)
 
 alist = []
 for a in assignments:
@@ -107,5 +121,15 @@ for a in assignments:
     }
     alist.append(ad)
 
+
+
 with open('.cache/assignments.json', 'w') as f:
     f.write(json.dumps(alist))
+
+if args.b:
+    tnow = datetime.datetime.now().strftime("%Y-%m-%d--%H%M")
+    bfname = f'.cache/assignments-{tnow}.json'
+    print("Storing backup as", bfname)
+    with open(bfname, 'w') as f:
+        f.write(json.dumps(alist))
+    

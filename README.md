@@ -3,12 +3,12 @@ CanvasFS
 
 This is currently a toy project to experiment with mounting
 assignments from Canvas as a file system. The main idea is that it
-lets files students hand in and the state of the assignments without
+lets me inspect files students hand in and the state of the assignments without
 having to download them with a browser. 
 
 To get an idea why: the students in the current course I'm teaching
 have handed in 994 files so far. About half of them zip files with
-source code.
+source code. 
 
 The file system exposes the revision history for handed in assignments to
 make it easier to focus on improvements the students have made.
@@ -88,12 +88,4 @@ Caching downloaded information will probably be removed (or made
 optional) in the future to avoid storing too much data on the
 computer. If you want to be on the safe side, you can remove the
 `.cache` when unmounting. 
-
-
-
-
-
-
-
-
 

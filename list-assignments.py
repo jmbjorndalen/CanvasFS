@@ -5,8 +5,16 @@ Mainly used for exploring/debugging.
 """
 
 import json
+import argparse
 
-assignments = json.loads(open('.cache/assignments.json').read())
+CACHE_DIR = ".cache"
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-c', '--cache', default=".cache")  # cache directory
+args = parser.parse_args()
+CACHE_DIR = args.cache
+
+assignments = json.loads(open(f'{CACHE_DIR}/assignments.json').read())
 
 
 def newest_update(subinfo):
@@ -59,7 +67,10 @@ def get_similarities(sub):
                 # some might have extra info here. Skip that.
                 continue
             # print('......', td)
-            scores[td['attachment_id']] = td['similarity_score']
+            if 'attachment_id' not in td:
+                # have seen some with a single dict: td = {'status': 'pending'}
+                continue
+            scores[td['attachment_id']] = td.get('similarity_score', 'UNKNOWN')
     return scores
 
 
@@ -93,7 +104,11 @@ for a in assignments:
         for s in sub['submission_history']:
             print("      ", s['attempt'], s["submitted_at"], s['cached_due_date'])
             for att in s.get('attachments', []):
-                score = turnitin_scores[att.get('id', None)]
+                sid = att.get('id', None)
+                if sid not in turnitin_scores:
+                    print(f"             NOT IN turnitin_scores: {sid}")
+                    continue
+                score = turnitin_scores[sid]
                 # url includes authentication, so can download it easily
                 # att.keys: ['content-type', 'created_at', 'display_name',
                 # 'filename', 'folder_id', 'hidden',
