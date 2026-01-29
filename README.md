@@ -38,12 +38,25 @@ Setting up
 You need an API key for Canvas. The easiest way to do this is to go to
 Account/Settings in Canvas. There you can create a new access token.
 
-The token should be stored in `api_key.txt`. This file is not included. 
 
-To fetch information for a given course, edit
-`get-submission-info.py`. `BASE_URL` points the the URL for your
-canvas installation, while `COURSE_ID` is the numeric id of the course
-you want to browse.
+You need to set up a `config.toml` file for some config values.  The
+file is not included to avoid accidental mistakes, but this can be
+used as a template:
+
+``` toml
+base_url = "<url>"
+course_id = <numeric id>
+api_key = "<key>"
+include_completed = <true/false>
+```
+
+The contents are as follows: 
+- `base_url` is the the URL for your canvas installation. 
+- `course_id` is the numeric id of the course you want to browse.
+- `api_key` is the access token / API key for Canvas.
+- `include_completed` a true or false value. True if you want to view
+  submissions after a course is closed, or if you want to view
+  students that have withdrawn from the course.
 
 
 Using

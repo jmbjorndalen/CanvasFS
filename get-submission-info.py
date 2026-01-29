@@ -9,24 +9,9 @@ import json
 import os
 import argparse
 import datetime
+from config import BASE_URL, COURSE_ID, INCLUDE_COMPLETED, api_key
 
 
-BASE_URL  = "https://uit.instructure.com/"   # Canvas for uit.no
-
-COURSE_ID = 4525                             # inf-1400 2018
-COURSE_ID = 11589                            # inf-1400 2019
-COURSE_ID = 16497                            # inf-1400 2020
-COURSE_ID = 21176                            # inf-1400 2021
-COURSE_ID = 24906                            # inf-1400 2022
-COURSE_ID = 33168                            # inf-2201 2024
-COURSE_ID = 36446                            # inf-2201 2025
-COURSE_ID = 38608                            # inf-3201 2025
-COURSE_ID = 40994                            # inf-2203 2026
-
-# To view submissions after a course is closed, or to view students that have withdrawn from the course.
-INCLUDE_COMPLETED = True
-
-api_key = open("api_key.txt", 'r').readline().strip()
 canvas = canvasapi.Canvas(BASE_URL, api_key)
 course = canvas.get_course(COURSE_ID)
 
