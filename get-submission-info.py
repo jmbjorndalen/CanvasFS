@@ -12,9 +12,6 @@ import datetime
 from config import BASE_URL, COURSE_ID, INCLUDE_COMPLETED, api_key
 
 
-canvas = canvasapi.Canvas(BASE_URL, api_key)
-course = canvas.get_course(COURSE_ID)
-
 
 def stud_to_dict(stud):
     if hasattr(stud, 'display_name'):
@@ -40,12 +37,16 @@ def subm_to_dict(subm, studs):
         'entered_grade' : subm.entered_grade,
         'submission_history' : subm.submission_history,
         'submission_comments' : subm.submission_comments,
-        'student_name' : studs[subm.user_id]['display_name']
+        'student_name' : studs[subm.user_id]['display_name'],
+        'group' : subm.group,
     }
 
 
-def has_user_enrollment(enrollments):
+def has_student_enrollment(enrollments):
     "Any of the enrollments has a student role"
+    # Students can have multiple enrollments. Typically at least one for the course and one or more for the groups.
+    # Some of the enrollments can be completed if we include that in the query for students. This can be
+    # if they are changing groups.
     return any(e['type'] == 'StudentEnrollment' for e in enrollments)
 
 
@@ -54,13 +55,25 @@ def is_completed_student(user):
     # Note that students with a "completed" status in get_users() can still be active as they
     # may simply have switched over to a different group and are therefore registered as completed in the
     # old group. This is why it is necessary to filter out the active users to avoid adding the students twice.
-    return has_user_enrollment(user.enrollments) and user.id not in students
+    return has_student_enrollment(user.enrollments) and user.id not in students
 
 
 def get_compl_submissions(assignment):
     """Submissions from completed students"""
-    return [assignment.get_submission(stud_id, include=['submission_history', 'submission_comments'])
+    return [assignment.get_submission(stud_id, include=['submission_history', 'submission_comments', 'group'])
             for stud_id in students_compl]
+
+
+def store_data(fname, data):
+    """Store 'data' as a json file named 'fname'"""
+    with open(fname, 'w') as f:
+        f.write(json.dumps(data))
+    
+    
+canvas = canvasapi.Canvas(BASE_URL, api_key)
+
+# https://canvasapi.readthedocs.io/en/stable/course-ref.html
+course = canvas.get_course(COURSE_ID)
 
 
 parser = argparse.ArgumentParser()
@@ -69,25 +82,30 @@ args = parser.parse_args()
 
 # Make sure the cache directory exists
 os.makedirs(".cache", exist_ok=True)
+
+# https://canvasapi.readthedocs.io/en/stable/assignment-ref.html
 print("Fetching assignments and students")
 assignments = list(course.get_assignments())
 assignments.sort(key=lambda x: x.name)
-# Active students
-students = {s.id : s for s in course.get_users(include=['enrollments']) if has_user_enrollment(s.enrollments)}
+
+# Active students. {id: canvasapi.user.User, ...}
+students = {s.id : s for s in course.get_users(include=['enrollments']) if has_student_enrollment(s.enrollments)}
 print(f"  - {len(students)} active students")
 # Students that have withddrawn or are marked as concluded/completed/prior, which happens
 # to almost all students when the semester is over.
 students_compl = {s.id : s for s in course.get_users(enrollment_state=['completed'], include=['enrollments'])
                   if is_completed_student(s)}
-print(f"  - {len(students_compl)} completed students")
-for sid, s in students_compl.items():
+print(f"  - {len(students_compl)} completed students sorted by name")
+for sid, s in sorted(students_compl.items(), key=lambda kv: kv[1].name):
     print("      - ", s)
 
 alist = []
 for a in assignments:
     print('Fetching info for', a.name)
-    subs = list(a.get_submissions(include=['submission_history', 'submission_comments']))
+    subs = list(a.get_submissions(include=['submission_history', 'submission_comments', 'group']))
     print(' -- got submissions')
+    # NB: this list of students [canvasapi.user.UserDisplay, ...] does not
+    # have the same information as students and students_compl
     studs = list(a.get_gradeable_students())
     print(' -- got students')
 
@@ -107,14 +125,11 @@ for a in assignments:
     alist.append(ad)
 
 
-
-with open('.cache/assignments.json', 'w') as f:
-    f.write(json.dumps(alist))
+store_data('.cache/assignments.json', alist)
 
 if args.b:
     tnow = datetime.datetime.now().strftime("%Y-%m-%d--%H%M")
     bfname = f'.cache/assignments-{tnow}.json'
     print("Storing backup as", bfname)
-    with open(bfname, 'w') as f:
-        f.write(json.dumps(alist))
+    store_data(bfname, alist)
     
