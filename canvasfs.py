@@ -53,6 +53,10 @@ DEBUG = False
 # LOG_LEVEL = logging.DEBUG
 LOG_LEVEL = logging.ERROR
 
+# Get running user's uid/gid and reuse it for the filesystem
+fs_uid = os.getuid()
+fs_gid = os.getgid()
+
 
 def filter_dict(d, remove_keys):
     """Returns a new dict with all key:values except the ones in remove_keys"""
@@ -113,7 +117,9 @@ class Entry:
     def getattr(self):
         return dict(st_mode=(S_IFREG | 0o444),
                     st_size=self.size,
-                    st_ctime=self.time,
+                    st_blocks=(self.size + 511) // 512,  # For du etc.
+                    st_uid=fs_uid, 
+                    st_gid=fs_gid, 
                     st_mtime=self.time,
                     st_atime=self.time)
 
@@ -128,6 +134,8 @@ class DirEntry(Entry):
     def getattr(self):
         return dict(st_mode=(S_IFDIR | 0o555),
                     st_nlink=2,
+                    st_uid=fs_uid, 
+                    st_gid=fs_gid, 
                     st_ctime=self.time,
                     st_mtime=self.time,
                     st_atime=self.time)
