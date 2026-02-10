@@ -25,10 +25,12 @@ TODO
 - safer handling of file types for detecting zip files.
 - possibility of using 'touch' or some other method for downloading an assignment without reading the files?
 - configurable cache directory.
-- rm on a file: remove from cache.
+- rm on a file: remove from cache.  
   We may not need to remove zip files that are already mounted from memory even if we remove the file from the cache directory.
   - or maybe just "unload" ?
-  - files may not need to be loaded or scanned until somebody descends into the .unp directory. 
+  - files may not need to be loaded or scanned until somebody descends into the .unp directory.
+  - could also use rmdir on .unp directory to remove unpacked directory. Might need a functools.cache variant with
+    weakref in that case.
 - archives inside archives. (students that submit a tarball inside a zip because canvas refuses to accept tarballs)
 """
 
@@ -38,6 +40,7 @@ from stat import S_IFDIR, S_IFREG
 from time import time
 from pathlib import Path
 from collections import defaultdict
+import functools
 import datetime
 import os
 import io
@@ -63,6 +66,31 @@ def filter_dict(d, remove_keys):
     return {k : v for k, v in d.items() if k not in remove_keys}
 
 
+@functools.cache
+def ddmcache(file):
+    """Used to dedup (cache and re-use) files from archives.
+    Sometimes students submit as groups, submit the same archives multiple files (resubmissions)
+    or many students include the same files (pre-code, documentation, assignment information etc).
+    """
+    return file
+
+
+def merge_paths(p1, p2):
+    """Merges paths to form p1/p2.
+    Some safeguards against the pathlib problem where Path("a") / Path("/b") becomes Path("/b")
+    (documented, but still not the needed behaviour here).
+    Mainly guarding against tar and zip files where the file paths start with ./ or /. 
+    """
+    pp1 = Path(p1)
+    pp2 = Path(p2)   #  takes care of ./ prefixes.
+    while len(pp2.parts) > 0 and pp2.parts[0] in ("/", ".."):
+        pp2 = Path(*pp2.parts[1:])
+
+    if len(pp2.parts) == 0:
+        print(f"WARNING: merge of '{p1}' and '{p2}' stripped down second part to nothing")
+    return str(pp1 / pp2)
+
+
 class Entry:
     def __init__(self, pathname, cont, time_entry=None):
         """cont : dict with
@@ -85,34 +113,43 @@ class Entry:
             self.time = cont.get('_time', 0)
         self.size = self.cont.get('size', 0)
 
-    def _cache_path(self, fid):
-        return f"{CACHE_DIR}/{fid}"
+    # Not all entries (like ZipEntry files) will have fid and url, so compute them at runtime
+    @property
+    def fid(self):
+        return self.cont['id']
+    
+    @property
+    def url(self):
+        return self.cont['url']
 
-    def _is_cached(self, cpath):
+    def _cache_path(self):
+        return f"{CACHE_DIR}/{self.fid}"
+
+    def _is_cached(self):
+        cpath = self._cache_path()
         return os.path.exists(cpath)
 
-    def get_offline_file(self, fid, url):
-        """Reads and returns a cached file, or downloads it and returns it if it isn't in the cache already"""
-        cpath = self._cache_path(fid)
-        if self._is_cached(cpath):
-            return open(cpath, 'rb').read()
-        r = urllib.request.urlopen(url)
-        if r.status == 200:
-            data = r.read()
-            with open(cpath, 'wb') as f:
-                f.write(data)
-            return data
-        logging.log(logging.DEBUG, f"TODO: check results from reading file {fid} {url} {r.status}")
-        raise RuntimeError("Could not get file")
+    def _open_file(self):
+        """Opens the locally cached file. Downloads the file first if it is not in the cache already.
+        Returns the opened file."""
+        cpath = self._cache_path()
+        if not self._is_cached():
+            # Need to fetch the file first
+            r = urllib.request.urlopen(self.url)
+            if r.status == 200:
+                data = r.read()
+                with open(cpath, 'wb') as f:
+                    f.write(data)
+            else:
+                logging.log(logging.DEBUG, f"TODO: check results from reading file {self.fid} {self.url} {r.status}")
+                raise RuntimeError("Could not get file")
+        return open(cpath, 'rb')
 
     def read(self, size, offset):
         """Reads a chunk from a file (potentially downloading and cacheing the file if necessary)."""
-        start = offset
-        end  = offset + size
-        fid = self.cont['id']
-        url = self.cont['url']
-        data = self.get_offline_file(fid, url)
-        return data[start:end]
+        with self._open_file() as f:
+            f.seek(offset)
+            return f.read(size)
 
     def getattr(self):
         return dict(st_mode=(S_IFREG | 0o444),
@@ -120,6 +157,7 @@ class Entry:
                     st_blocks=(self.size + 511) // 512,  # For du etc.
                     st_uid=fs_uid, 
                     st_gid=fs_gid, 
+                    st_ctime=self.time,
                     st_mtime=self.time,
                     st_atime=self.time)
 
@@ -178,16 +216,18 @@ class DebugEntry(Entry):
 
 
 # ###### Zip Files / archives ######################
-
 # TODO: kludgy, but let's figure out how to do this before cleaning it up.
 
 class ZipFileEntry(Entry):
+    """Keeps unpacked files in memory.
+    Reading from archives (especially tar files) could be very slow, so this is a speed vs. memory opt.
+    """
     def __init__(self, path, info, data):
         # A little bit of band-aid. Should modify the hierarchy further up.
         # Need to pick from info object
         super().__init__(path, info)
-        self._data = data
-        self.size = len(data)
+        self._data = ddmcache(data)
+        self.size = len(self._data)
 
     def read(self, size, offset):
         return self._data[offset:offset + size]
@@ -208,65 +248,67 @@ class ZipEntry(Entry):
     def __init__(self, pathname, cont, ctx, time_entry=None):
         super().__init__(pathname, cont, time_entry=time_entry)
         self.is_unpacked = False
-        self._data = None
         self.ctx = ctx
         self.check_unpack()
 
+    def read_entry(self, entry):
+        """Reads the file contents from the entry"""
+        bio = io.BytesIO()
+        for block in entry.get_blocks():
+            bio.write(block)
+        bio.seek(0)
+        return bio.read()
+
     def check_unpack(self):
-        if self.is_unpacked:
+        if self.is_unpacked or (not auto_unpack) or (not self._is_cached()):
+            # not ready for auto_unpack, already unpacked, or can't unpack if not cached
             return
-        fid = self.cont['id']
-        url = self.cont['url']
-        cpath = self._cache_path(fid)
-        if self._is_cached(cpath):
-            if self._data is None:
-                # It's already cached, so just read it.
-                self._data = self.get_offline_file(fid, url)
-
-            try:
-                with libarchive.file_reader(cpath) as zf:
-                    # Some zipfiles don't include subdirectory entries (only direct paths to files).
-                    # This will be handled in add_entry.
-                    dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
-                    # add the root/mount point
-                    self.ctx.add_entry(ZipDirEntry(dir_prefix, {'_time': self.time}))
-                    # add each of the directories and files listed in the zip file.
-                    for entry in zf:
-                        path = f"{dir_prefix}/{entry.pathname}"
-                        info = {"_time": max(t for t in (entry.ctime, entry.mtime) if t is not None)}
-                        if entry.isdir:
-                            self.ctx.add_entry(ZipDirEntry(path, info))
-                        elif entry.isreg:
-                            bio = io.BytesIO()
-                            for block in entry.get_blocks():
-                                bio.write(block)
-                            bio.seek(0)
-                            self.debuglst.append(path)
-                            self.ctx.add_entry(ZipFileEntry(path, info, bio.read()))
+        try:
+            cpath = self._cache_path()
+            with libarchive.file_reader(cpath) as zf:
+                # Some zipfiles don't include subdirectory entries (only direct paths to files).
+                # This will be handled in add_entry.
+                dir_prefix = self.pathname + ".unp"  # the pathname of the unpack directory
+                print("Unpacking ", dir_prefix)
+                # add the root/mount point
+                self.ctx.add_entry(ZipDirEntry(dir_prefix, {'_time': self.time}))
+                # add each of the directories and files listed in the zip file.
+                for entry in zf:
+                    path = merge_paths(dir_prefix, entry.pathname)    # f"{dir_prefix}/{entry.pathname}"
+                    info = {"_time": max(t for t in (entry.ctime, entry.mtime) if t is not None)}
+                    if entry.isdir:
+                        self.ctx.add_entry(ZipDirEntry(path, info))
+                    elif entry.isreg:
+                        # Regular file
+                        self.debuglst.append(path)
+                        self.ctx.add_entry(ZipFileEntry(path, info, self.read_entry(entry)))
+                    else:
+                        if entry.issym:
+                            print(f"NB (ZipEntry): skipping symbolic link: {path}")
                         else:
-                            if entry.issym:
-                                print(f"NB (ZipEntry): skipping symbolic link: {path}")
-                            else:
-                                print(f"WARNING: ZipEntry: {path} is of unhandled file type {entry.filetype} {entry.issym=}")
-            except zipfile.BadZipFile:
-                # TODO: this exception is from zipFile and will probably never be thrown by libarchive.
-                print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
-
+                            print(f"WARNING: ZipEntry: {path} is of unhandled file type {entry.filetype} {entry.issym=}")
+            self.is_unpacked = True
+        except zipfile.BadZipFile:
+            # TODO: this exception is from zipFile and will probably never be thrown by libarchive.
+            print(f"Failed to open {self.pathname} ({cpath}) - bad zipfile")
+                
     def read(self, size, offset):
-        if self._data is None:
-            fid = self.cont['id']
-            url = self.cont['url']
-            self._data = self.get_offline_file(fid, url)
-            self.check_unpack()
-        ret = self._data[offset:offset + size]
-        return ret
+        # TODO: some larger files are very slow to read using this. Consider using an lru_cache for the file contents?
+        # Could be a side effect of buffer size in 'wc'...
+        # 
+        # Need a bit of extra magic to trigger downloading and unpacking archive files.
+        # Reading data first ensures that the file is cached locally, it can then be unpacked.
+        data = super().read(size, offset)
+        self.check_unpack()
+        return data
 
     @classmethod
     def possible_archive(self, fpath):
         lfpath = fpath.lower()
-        return lfpath.endswith('.zip') or lfpath.endswith('.rar') or \
-            lfpath.endswith('.tar.gz') or lfpath.endswith('.tgz') or \
-            lfpath.endswith('.7z')
+        # TODO: a safer option could be to try to open the file with libarchive.
+        # libarchive does not appear to provide a function that checks if it may be an archive (like magic keys)
+        return any(lfpath.endswith(end) for end in
+                   ['.zip', '.rar', '.tar.gz', '.tgz', '.tar', '.7z'])
 
 
 # Some of this class is based on the Context example from the fusepy distribution.
@@ -386,22 +428,31 @@ def mount_fs():
                     if ZipEntry.possible_archive(fpath):
                         # Note: the 'unp' directory is not added until the zip file is downloaded (by reading it)
                         # The reason for this is to avoid triggering downloads of all zip files using "find", file managers etc.
+                        # TODO: option to turn this mount time unpacking off.
                         ctx.add_entry(ZipEntry(fpath, att, ctx, time_entry='modified_at'))
                     else:
                         ctx.add_entry(Entry(fpath, att, time_entry='modified_at'))
 
     ctx.add_entry(DebugEntry())
+    global auto_unpack
+    auto_unpack = True
+    print("dedup cache info: ", ddmcache.cache_info())
     print("Ready")
 
     FUSE(ctx, args.mount, foreground=True, ro=True, allow_other=True)
 
 
+
+auto_unpack = False
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--cache')  # cache directory
+    parser.add_argument('-nu', '--noautounpack', action="store_true", help="Do not unpack archives automatically on boot") 
     parser.add_argument('mount')
     args = parser.parse_args()
+
+    auto_unpack = not args.noautounpack
 
     logging.basicConfig(level=LOG_LEVEL)
 
