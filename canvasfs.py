@@ -391,6 +391,36 @@ class Context(LoggingMixIn, Operations):
             logging.log(logging.DEBUG, f"add_entry zip file/dir entry for path {entry.pathname} in dir {entry.parent}")
 
 
+def make_sub_path(a_path, sub):
+    """Make submissionm path prefix as "assignment_name"/<..>/student_name".
+    Optionally injects (in the following path order):
+    - submission status (submitted or not)
+    - grade status
+    - group name 
+    """
+    sname = sub['student_name']
+    group = sub.get("group", None)
+    parts = [a_path, sname]
+
+    if by_group and group is not None and group['name'] is not None:
+        gname = group['name']
+        parts.insert(1, gname)
+
+    if by_grade:
+        # TODO: consider setting ungraded as something else than None
+        grade = str(sub['entered_grade'])
+        parts.insert(1, grade)
+        
+    if by_submitted:
+        if sub['workflow_state'] == 'unsubmitted':
+            parts.insert(1, "unsubmitted")
+        else:
+            parts.insert(1, "submitted")
+        
+    sub_path = "/".join(parts)    # TODO: str(Path(*parts)) ? 
+    return sub_path    
+            
+
 def mount_fs():
     # Make sure the cache directory exists
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -410,7 +440,8 @@ def mount_fs():
         # logging.log(logging.DEBUG, f"{dirs}")
         for sub in a['f_submissions']:
             # Each submission is in a subdirectory with the name of the student.
-            sub_path = f"{a_path}/{sub['student_name']}"
+            # sub_path = f"{a_path}/{sub['student_name']}"
+            sub_path = make_sub_path(a_path, sub)
             # Students that haven't submitted still show up, but submitted_at is non-existing. This gives us a 0 epoch time.
             ctx.add_entry(DirEntry(sub_path, sub, time_entry='submitted_at'))
             ctx.add_entry(MetaEntry(sub_path, sub, time_entry='submitted_at', filter_entries={'submission_history'}))
@@ -447,12 +478,18 @@ auto_unpack = False
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--cache')  # cache directory
+    parser.add_argument('-c', '--cache', help="Cache directory")  # cache directory
+    parser.add_argument('-bsub', '--by_submitted', action="store_true", help="Organize by submission_status") 
+    parser.add_argument('-bgrade', '--by_grade', action="store_true", help="Organize by entered grade") 
+    parser.add_argument('-bg', '--by_group', action="store_true", help="Organize by submission group") 
     parser.add_argument('-nu', '--noautounpack', action="store_true", help="Do not unpack archives automatically on boot") 
     parser.add_argument('mount')
     args = parser.parse_args()
 
     auto_unpack = not args.noautounpack
+    by_group = args.by_group
+    by_submitted = args.by_submitted
+    by_grade = args.by_grade
 
     logging.basicConfig(level=LOG_LEVEL)
 
